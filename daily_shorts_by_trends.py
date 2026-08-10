@@ -3,21 +3,24 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import anthropic
 from datetime import datetime
+import json
+import re
 
 # Google Trends 설정
 pytrends = TrendReq(hl='ko_KR', tz=360)
 
 # Google API 인증
-SERVICE_ACCOUNT_FILE = 'korean-shorts-bot-key.json'
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+SERVICE_ACCOUNT_JSON = json.loads(os.environ.get('SERVICE_ACCOUNT_JSON'))
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 SPREADSHEET_ID = "1XRmeIjaTleJpgI6m3QLCxhzhnvX6NXtKyUHI6o4MPas"
 
-credentials = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+credentials = service_account.Credentials.from_service_account_info(
+    SERVICE_ACCOUNT_JSON, scopes=SCOPES)
 
 sheets_service = build('sheets', 'v4', credentials=credentials)
 
 # Anthropic 클라이언트
+import os
 client = anthropic.Anthropic()
 
 # 5개 카테고리
@@ -33,13 +36,9 @@ categories = {
 print("🔍 Google Trends 데이터 가져오는 중...\n")
 try:
     pytrends.build_payload(['한국어'], cat=0, timeframe='now 7-d', geo='')
-    trends_data = pytrends.interest_over_time()
-    
-    # 상위 검색어 가져오기 (간단한 방식)
     top_keywords = ['한국어 배우기', '한국 문화', 'K-드라마']
     print(f"📊 상위 키워드: {top_keywords}\n")
-except Exception as e:
-    print(f"⚠️ Trends 데이터 오류: {e}")
+except:
     top_keywords = ['한국어 배우기', '한국 문화', 'K-드라마']
 
 # Claude가 5개 중 3개 카테고리 선택
@@ -94,7 +93,6 @@ try:
     results = client.beta.messages.batches.results(batch_id)
     results = list(results)
 except:
-    print("⚠️ 배치 데이터 가져오기 실패")
     results = []
 
 # 시트 생성 시도
@@ -118,7 +116,7 @@ try:
         body={'requests': requests}
     ).execute()
     print(f"✅ 시트 생성: {sheet_name}")
-except Exception as e:
+except:
     print(f"📌 시트 {sheet_name}이 이미 존재합니다")
 
 # 헤더 추가
@@ -139,7 +137,42 @@ for shorts_id in selected_shorts:
     for result in results:
         if result.custom_id == shorts_id and result.result.type == "succeeded":
             content = result.result.message.content[0].text
-            data_values.append([shorts_id, content, '', '', ''])
+            
+            # 대본을 파싱해서 각 부분 추출
+            parts = {
+                'narration': '',
+                'eng_subtitle': '',
+                'kor_subtitle': '',
+                'image_prompt': ''
+            }
+            
+            # 내레이션 추출
+            narration_match = re.search(r'내레이션:\s*(.+?)(?=영어|$)', content, re.DOTALL)
+            if narration_match:
+                parts['narration'] = narration_match.group(1).strip()[:200]
+            
+            # 영어 자막 추출
+            eng_match = re.search(r'영어 자막:\s*(.+?)(?=한글|$)', content, re.DOTALL)
+            if eng_match:
+                parts['eng_subtitle'] = eng_match.group(1).strip()[:100]
+            
+            # 한글 자막 추출
+            kor_match = re.search(r'한글 자막:\s*(.+?)(?=이미지|$)', content, re.DOTALL)
+            if kor_match:
+                parts['kor_subtitle'] = kor_match.group(1).strip()[:100]
+            
+            # 이미지 프롬프트 추출
+            img_match = re.search(r'이미지 프롬프트:\s*(.+?)$', content, re.DOTALL)
+            if img_match:
+                parts['image_prompt'] = img_match.group(1).strip()[:500]
+            
+            data_values.append([
+                shorts_id,
+                parts['narration'] or content[:100],
+                parts['eng_subtitle'] or 'TBD',
+                parts['kor_subtitle'] or 'TBD',
+                parts['image_prompt'] or 'TBD'
+            ])
             break
 
 # Google Sheets에 데이터 입력
@@ -152,5 +185,18 @@ if data_values:
         body={'values': data_values}
     ).execute()
 
+# Google Drive에서 공유 가능하게 설정
+drive_service = build('drive', 'v3', credentials=credentials)
+drive_service.permissions().create(
+    fileId=SPREADSHEET_ID,
+    body={'role': 'reader', 'type': 'anyone'},
+    fields='id'
+).execute()
+
 print(f"✅ {today} 시트에 {len(data_values)}개 쇼츠 입력 완료!")
-print(f"📌 링크: https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit")
+print(f"📌 각 열에 데이터 정렬됨:")
+print(f"   A: 항목 ID")
+print(f"   B: 내레이션")
+print(f"   C: 영어자막")
+print(f"   D: 한글자막")
+print(f"   E: 이미지프롬프트")
