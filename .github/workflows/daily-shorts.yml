@@ -1,0 +1,34 @@
+name: Daily Korean Shorts Generator
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  generate-shorts:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Python 설정
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: 라이브러리 설치
+      run: |
+        pip install anthropic pytrends google-auth-oauthlib google-auth-httplib2 google-api-python-client
+    
+    - name: 서비스 계정 키 생성
+      env:
+        SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+      run: |
+        echo "$SERVICE_ACCOUNT_JSON" > korean-shorts-bot-key.json
+    
+    - name: 쇼츠 자동 생성 및 업로드
+      env:
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      run: |
+        python daily_shorts_by_trends.py
