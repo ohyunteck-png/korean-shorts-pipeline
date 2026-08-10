@@ -4,7 +4,6 @@ from googleapiclient.discovery import build
 import anthropic
 from datetime import datetime
 import json
-import re
 import os
 
 pytrends = TrendReq(hl='ko_KR', tz=360)
@@ -84,14 +83,14 @@ except:
     results = []
 
 try:
-    requests = [{'addSheet': {'properties': {'title': sheet_name, 'gridProperties': {'rowCount': 100, 'columnCount': 5}}}}]
+    requests = [{'addSheet': {'properties': {'title': sheet_name, 'gridProperties': {'rowCount': 100, 'columnCount': 2}}}}]
     sheets_service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body={'requests': requests}).execute()
     print(f"✅ 시트 생성: {sheet_name}")
 except:
     print(f"📌 시트 {sheet_name}이 이미 존재합니다")
 
-header_range = f"'{sheet_name}'!A1:E1"
-header_values = [['항목', '내레이션', '영어자막', '한글자막', '이미지프롬프트']]
+header_range = f"'{sheet_name}'!A1:B1"
+header_values = [['항목', '대본']]
 sheets_service.spreadsheets().values().update(
     spreadsheetId=SPREADSHEET_ID,
     range=header_range,
@@ -105,37 +104,7 @@ for shorts_id in selected_shorts:
     for result in results:
         if result.custom_id == shorts_id and result.result.type == "succeeded":
             content = result.result.message.content[0].text
-            
-            parts = {
-                'narration': '',
-                'eng_subtitle': '',
-                'kor_subtitle': '',
-                'image_prompt': ''
-            }
-            
-            narration_match = re.search(r'내레이션:\s*(.+?)(?=영어|$)', content, re.DOTALL)
-            if narration_match:
-                parts['narration'] = narration_match.group(1).strip()
-            
-            eng_match = re.search(r'영어 자막:\s*(.+?)(?=한글|$)', content, re.DOTALL)
-            if eng_match:
-                parts['eng_subtitle'] = eng_match.group(1).strip()
-            
-            kor_match = re.search(r'한글 자막:\s*(.+?)(?=이미지|$)', content, re.DOTALL)
-            if kor_match:
-                parts['kor_subtitle'] = kor_match.group(1).strip()
-            
-            img_match = re.search(r'이미지 프롬프트:\s*(.+?)$', content, re.DOTALL)
-            if img_match:
-                parts['image_prompt'] = img_match.group(1).strip()
-            
-            data_values.append([
-                shorts_id,
-                parts['narration'] or content,
-                parts['eng_subtitle'] or 'TBD',
-                parts['kor_subtitle'] or 'TBD',
-                parts['image_prompt'] or 'TBD'
-            ])
+            data_values.append([shorts_id, content])
             break
 
 if data_values:
@@ -148,9 +117,3 @@ if data_values:
     ).execute()
 
 print(f"✅ {today} 시트에 {len(data_values)}개 쇼츠 입력 완료!")
-print(f"📌 각 열에 데이터 정렬됨:")
-print(f"   A: 항목 ID")
-print(f"   B: 내레이션")
-print(f"   C: 영어자막")
-print(f"   D: 한글자막")
-print(f"   E: 이미지프롬프트")
