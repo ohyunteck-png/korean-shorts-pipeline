@@ -21,7 +21,6 @@ credentials = service_account.Credentials.from_service_account_info(
 sheets_service = build('sheets', 'v4', credentials=credentials)
 
 # Anthropic 클라이언트
-import os
 client = anthropic.Anthropic()
 
 # 5개 카테고리
@@ -135,63 +134,3 @@ sheets_service.spreadsheets().values().update(
 data_values = []
 
 for shorts_id in selected_shorts:
-    for result in results:
-        if result.custom_id == shorts_id and result.result.type == "succeeded":
-            content = result.result.message.content[0].text
-            
-            # 대본을 파싱해서 각 부분 추출
-            parts = {
-                'narration': '',
-                'eng_subtitle': '',
-                'kor_subtitle': '',
-                'image_prompt': ''
-            }
-            
-            # 내레이션 추출
-            narration_match = re.search(r'내레이션:\s*(.+?)(?=영어|$)', content, re.DOTALL)
-            if narration_match:
-                parts['narration'] = narration_match.group(1).strip()[:200]
-            
-            # 영어 자막 추출
-            eng_match = re.search(r'영어 자막:\s*(.+?)(?=한글|$)', content, re.DOTALL)
-            if eng_match:
-                parts['eng_subtitle'] = eng_match.group(1).strip()[:100]
-            
-            # 한글 자막 추출
-            kor_match = re.search(r'한글 자막:\s*(.+?)(?=이미지|$)', content, re.DOTALL)
-            if kor_match:
-                parts['kor_subtitle'] = kor_match.group(1).strip()[:100]
-            
-            # 이미지 프롬프트 추출
-            img_match = re.search(r'이미지 프롬프트:\s*(.+?)$', content, re.DOTALL)
-            if img_match:
-                parts['image_prompt'] = img_match.group(1).strip()[:500]
-            
-            data_values.append([
-    shorts_id,
-    parts['narration'] or content,
-    parts['eng_subtitle'] or 'TBD',
-    parts['kor_subtitle'] or 'TBD',
-    parts['image_prompt'] or 'TBD'
-])
-            break
-
-# Google Sheets에 데이터 입력
-if data_values:
-    data_range = f"'{sheet_name}'!A2"
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=data_range,
-        valueInputOption='RAW',
-        body={'values': data_values}
-    ).execute()
-
-
-
-print(f"✅ {today} 시트에 {len(data_values)}개 쇼츠 입력 완료!")
-print(f"📌 각 열에 데이터 정렬됨:")
-print(f"   A: 항목 ID")
-print(f"   B: 내레이션")
-print(f"   C: 영어자막")
-print(f"   D: 한글자막")
-print(f"   E: 이미지프롬프트")
