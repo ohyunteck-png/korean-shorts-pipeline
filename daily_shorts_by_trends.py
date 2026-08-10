@@ -1,173 +1,416 @@
-from pytrends.request import TrendReq
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-import anthropic
-from datetime import datetime
-import json
-import os
-import time
+"""
+Korean YouTube Shorts 자동화 파이프라인 FINAL
+=============================================
+- Google Trends 기반 주제 자동 선택
+- Claude API로 JSON 형식 대본 생성
+- Google Sheets 자동 입력 (6열 구조)
 
-pytrends = TrendReq(hl='ko_KR', tz=360)
-
-SERVICE_ACCOUNT_JSON = json.loads(os.environ.get('SERVICE_ACCOUNT_JSON'))
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-SPREADSHEET_ID = "1XRmeIjaTleJpgI6m3QLCxhzhnvX6NXtKyUHI6o4MPas"
-
-credentials = service_account.Credentials.from_service_account_info(
-    SERVICE_ACCOUNT_JSON, scopes=SCOPES)
-
-sheets_service = build('sheets', 'v4', credentials=credentials)
-client = anthropic.Anthropic()
-
-categories = {
-    'shorts-1-daily-talk': '일상대화 실수',
-    'shorts-2-cultural-etiquette': '문화예절',
-    'shorts-3-situational-phrases': '상황별말실수',
-    'shorts-4-tourist-expressions': '관광지 표현',
-    'shorts-5-kdrama-phrases': '드라마 표현'
-}
-
-print("🔍 Google Trends 데이터 가져오는 중...\n")
-try:
-    pytrends.build_payload(['한국어'], cat=0, timeframe='now 7-d', geo='')
-    top_keywords = ['한국어 배우기', '한국 문화', 'K-드라마']
-    print(f"📊 상위 키워드: {top_keywords}\n")
-except:
-    top_keywords = ['한국어 배우기', '한국 문화', 'K-드라마']
-
-print("🤖 Claude가 최적 카테고리 선택 중...\n")
-
-prompt = f"""
-다음은 Google Trends에서 수집한 인기 키워드입니다:
-{top_keywords}
-
-그리고 우리의 5개 쇼츠 카테고리입니다:
-1. shorts-1-daily-talk: 일상대화 실수
-2. shorts-2-cultural-etiquette: 문화예절
-3. shorts-3-situational-phrases: 상황별말실수
-4. shorts-4-tourist-expressions: 관광지 표현
-5. shorts-5-kdrama-phrases: 드라마 표현
-
-위의 인기 키워드와 가장 잘 맞는 카테고리 3개를 선택하세요.
-
-응답 형식:
-shorts-X-[category name]
-shorts-X-[category name]
-shorts-X-[category name]
-
-3줄만 출력하세요. 추가 설명 없음.
+Sheets 구조:
+A: CUT번호 | B: 타임코드 | C: 내레이션(영어) | D: 영어자막 | E: 한글자막 | F: 이미지프롬프트
 """
 
-response = client.messages.create(
-    model="claude-haiku-4-5-20251001",
-    max_tokens=100,
-    messages=[{"role": "user", "content": prompt}]
-)
+import anthropic
+import json
+import re
+from datetime import datetime
+from pytrends.request import TrendReq
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import os
 
-selected_shorts = response.content[0].text.strip().split('\n')
-selected_shorts = [s.strip() for s in selected_shorts if s.strip()][:3]
+# ============================================================
+# 설정
+# ============================================================
 
-print(f"✅ 선택된 쇼츠:\n")
-for shorts_id in selected_shorts:
-    if shorts_id in categories:
-        print(f"  - {shorts_id}: {categories[shorts_id]}")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+SHEETS_ID = "1XRmeIjaTleJpgI6m3QLCxhzhnvX6NXtKyUHI6o4MPas"
+SERVICE_ACCOUNT_JSON = os.environ.get("SERVICE_ACCOUNT_JSON")
+MODEL = "claude-haiku-4-5-20251001"  # 빠르고 저렴한 모델
 
-print(f"\n📤 새로운 배치 생성 중...\n")
+# ============================================================
+# 캐릭터 설정 (이미지프롬프트에 자동 삽입)
+# ============================================================
 
-messages = []
-for shorts_id in selected_shorts:
-    category_name = categories.get(shorts_id, shorts_id)
-    
-    messages.append({
-        "custom_id": shorts_id,
-        "params": {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"""Create a Korean educational YouTube Shorts script for teaching "{category_name}".
+CHARACTER_GUIDE = """
+CHARACTERS (Clay Animation Style):
+- TOM: American male in 30s. Light blue shirt, navy chino pants, white sneakers, white leather belt, Omega Seamaster (orange dial) on left wrist. Tom Holland vibes. Expressive reactions — wide eyes, hand over mouth, finger guns.
+- JISOO: Korean female in 20s. White shirt, beige pleated skirt (knee length), black ponytail, Korean skin tone, no watch. Jisoo vibes. Warm expressions — thumbs up, slight head tilt, laughing.
+- SETTING: Bright pastel café interior, round table, coffee cups, warm lighting.
+- STYLE: Smooth clay texture, soft shadows, vivid colors, minimal background detail.
+"""
 
-**3-Stage Structure:**
-[0-12s] 착오/실수 상황 + 새로운 문법/어휘 소개
-[12-30s] 해결책/올바른 사용법 + 예제
-[30-45s] 성공 결과 + 복습 + CTA
+# ============================================================
+# 쇼츠 주제 카테고리 (Google Trends 연동)
+# ============================================================
 
-**Format each CUT as:**
-CUT 1: 5초
-내레이션: [Korean narration - teach grammar/vocab]
-영어자막: [English translation]
-한글자막: [Korean subtitle]
-이미지프롬프트: [Clay animation image prompt]
+SHORTS_CATEGORIES = [
+    {
+        "id": "daily-talk",
+        "title": "일상대화 실수",
+        "hook": "embarrassing moment in casual Korean conversation"
+    },
+    {
+        "id": "cultural-etiquette",
+        "title": "문화예절 실수",
+        "hook": "cultural mistake that makes Koreans cringe"
+    },
+    {
+        "id": "situational-phrases",
+        "title": "상황별 말실수",
+        "hook": "wrong phrase used in a specific situation"
+    },
+    {
+        "id": "tourist-expressions",
+        "title": "관광지 표현",
+        "hook": "tourist phrase that sounds totally off to Koreans"
+    },
+    {
+        "id": "kdrama-phrases",
+        "title": "드라마 표현",
+        "hook": "K-drama phrase that doesn't work in real life"
+    },
+]
 
-【줄거리】
-상황: [어떤 상황인가]
-배우는 한국어: [어떤 문법/어휘를 배우는가]
-포인트: [왜 이것이 중요한가]
+# ============================================================
+# 시스템 프롬프트 (핵심 규칙 고정)
+# ============================================================
 
-Continue for CUT 2-9 with storyline explanation after each cut.
+SYSTEM_PROMPT = f"""
+You are a Korean YouTube Shorts scriptwriter for an English-speaking audience.
+You write scripts that are fun, relatable, and easy to follow — like a cool friend explaining Korean, not a textbook.
 
-Make it educational, progressive, and engaging for Korean learners.
-Provide clear storyline explanation for each cut."""
-                }
-            ],
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 3000
-        }
-    })
+=== TONE ===
+- B-tone: calm reaction style. "Oops.", "That's it.", "Wait—"
+- NEVER use "Bro" — too American, alienates global audience
+- Keep it chill, not hyperactive
+- Speak as TOM (American character experiencing the mistake firsthand)
 
-batch = client.beta.messages.batches.create(requests=messages)
-batch_id = batch.id
-print(f"📌 배치 ID: {batch_id}\n")
+=== STRUCTURE: 8 CUTS, 45 SECONDS TOTAL ===
+CUT 1 [0-2s]   Hook — TOM's reaction to realizing his mistake
+CUT 2 [2-6s]   Situation — replay what just happened
+CUT 3 [6-11s]  Rule — ONE rule, explained simply
+CUT 4 [11-16s] Fix — correct version demonstrated
+CUT 5 [16-23s] Twist — reverse situation or exception to the rule
+CUT 6 [23-30s] Natural flow — full conversation using the correct version
+CUT 7 [30-35s] One-line recap — ultra short summary
+CUT 8 [35-45s] CTA — ALWAYS exactly: "Subscribe. Your Korean gets better every video. 🔔"
 
-print("⏳ 배치 처리 중...\n")
-while True:
-    batch_status = client.beta.messages.batches.retrieve(batch_id)
-    print(f"상태: {batch_status.processing_status}")
-    if batch_status.processing_status == "ended":
-        break
-    time.sleep(5)
+=== NARRATION RULES ===
+- English only
+- MAX 1-2 sentences per CUT
+- Short punchy rhythm — "Match. Their. Tone."
+- NO grammar terms (no "formal speech endings", "honorifics", etc.)
+- Speak naturally, like talking to a friend
 
-print("\n✅ 배치 완료!\n")
+=== SUBTITLE RULES ===
+English subtitle:
+- Max 5-6 words per CUT
+- Always present on every CUT
+- Summarize or punch up the narration
 
-results = list(client.beta.messages.batches.results(batch_id))
+Korean subtitle:
+- ONLY on CUTs where Korean expressions appear (CUT 2, 4, 5, 6 typically)
+- Max 10 Korean characters
+- Show the actual Korean expression being learned
+- Empty string "" for CUTs with no Korean expression
 
-print(f"📤 Google Sheets에 입력 중...\n")
+=== IMAGE PROMPT RULES ===
+- Always specify TOM and JISOO using character guide below
+- Describe emotion, pose, and visual effect clearly
+- Include speech bubble colors: blue = formal(존댓말), red/orange = casual(반말)
+- Always end with "Clay animation style, soft lighting, pastel café background"
 
-today = datetime.now().strftime("%Y-%m-%d")
-sheet_name = today
+=== CHARACTER GUIDE ===
+{CHARACTER_GUIDE}
 
-try:
-    requests = [{'addSheet': {'properties': {'title': sheet_name, 'gridProperties': {'rowCount': 100, 'columnCount': 2}}}}]
-    sheets_service.spreadsheets().batchUpdate(spreadsheetId=SPREADSHEET_ID, body={'requests': requests}).execute()
-    print(f"✅ 시트 생성: {sheet_name}")
-except:
-    print(f"📌 시트 {sheet_name}이 이미 존재합니다")
+=== ONE POINT RULE ===
+Each episode covers EXACTLY ONE learning point.
+Do NOT mix multiple grammar points in one episode.
+Simple > thorough. Memorable > complete.
 
-header_range = f"'{sheet_name}'!A1:B1"
-header_values = [['항목', '대본']]
-sheets_service.spreadsheets().values().update(
-    spreadsheetId=SPREADSHEET_ID,
-    range=header_range,
-    valueInputOption='RAW',
-    body={'values': header_values}
-).execute()
+=== OUTPUT FORMAT ===
+Return ONLY a valid JSON array. No explanation, no markdown, no extra text.
+Exactly 8 objects in the array.
 
-data_values = []
+[
+  {{
+    "cut": 1,
+    "timecode": "0-2s",
+    "narration": "...",
+    "en_subtitle": "...",
+    "kr_subtitle": "",
+    "image_prompt": "..."
+  }},
+  ...
+]
+"""
 
-for shorts_id in selected_shorts:
-    for result in results:
-        if result.custom_id == shorts_id and result.result.type == "succeeded":
-            content = result.result.message.content[0].text
-            data_values.append([shorts_id, content])
-            break
+# ============================================================
+# Google Trends 주제 선택
+# ============================================================
 
-if data_values:
-    data_range = f"'{sheet_name}'!A2"
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=data_range,
-        valueInputOption='RAW',
-        body={'values': data_values}
+def get_trending_topics():
+    """Google Trends에서 한국어 교육 관련 트렌드 키워드 추출"""
+    try:
+        pytrends = TrendReq(hl='en-US', tz=360)
+        keywords = ["learn Korean", "Korean language", "K-drama phrases", "Korean culture", "Korean etiquette"]
+        pytrends.build_payload(keywords, timeframe='now 7-d', geo='US')
+        interest_df = pytrends.interest_over_time()
+
+        if interest_df.empty:
+            print("⚠️ Trends 데이터 없음 — 기본 카테고리 사용")
+            return SHORTS_CATEGORIES[:3]
+
+        # 트렌드 점수 기준으로 카테고리 정렬
+        scores = interest_df.mean()
+        trending = []
+        for cat in SHORTS_CATEGORIES:
+            score = sum(scores.get(kw, 0) for kw in keywords)
+            trending.append((cat, score))
+
+        trending.sort(key=lambda x: x[1], reverse=True)
+        selected = [t[0] for t in trending[:3]]
+        print(f"✅ 트렌드 기반 선택: {[c['title'] for c in selected]}")
+        return selected
+
+    except Exception as e:
+        print(f"⚠️ Trends 오류 ({e}) — 기본 카테고리 사용")
+        return SHORTS_CATEGORIES[:3]
+
+# ============================================================
+# Claude API 대본 생성
+# ============================================================
+
+def generate_script(category: dict) -> list:
+    """
+    Claude API로 JSON 대본 생성
+    Returns: 8개 CUT 딕셔너리 리스트
+    """
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    user_prompt = f"""
+Create a Korean YouTube Shorts script for this episode:
+
+EPISODE ID: {category['id']}
+EPISODE TITLE: {category['title']}
+HOOK ANGLE: {category['hook']}
+
+Follow ALL rules in the system prompt exactly.
+Return ONLY the JSON array with 8 CUT objects.
+"""
+
+    print(f"  🤖 Claude 생성 중: {category['title']}...")
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=2000,
+        system=SYSTEM_PROMPT,
+        messages=[
+            {"role": "user", "content": user_prompt}
+        ]
+    )
+
+    raw = response.content[0].text.strip()
+
+    # JSON 파싱 (마크다운 펜스 제거)
+    clean = re.sub(r"```json|```", "", raw).strip()
+
+    try:
+        cuts = json.loads(clean)
+        if len(cuts) != 8:
+            raise ValueError(f"CUT 수 오류: {len(cuts)}개 (8개 필요)")
+        print(f"  ✅ 생성 완료: {len(cuts)} CUTs")
+        return cuts
+    except Exception as e:
+        print(f"  ❌ JSON 파싱 실패: {e}")
+        print(f"  RAW OUTPUT:\n{raw[:500]}")
+        return []
+
+# ============================================================
+# Google Sheets 입력
+# ============================================================
+
+def get_sheets_service():
+    """Google Sheets API 서비스 초기화"""
+    creds_dict = json.loads(SERVICE_ACCOUNT_JSON)
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return build("sheets", "v4", credentials=creds)
+
+def create_date_sheet(service, sheet_name: str):
+    """날짜별 시트 생성"""
+    body = {"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]}
+    try:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=SHEETS_ID,
+            body=body
+        ).execute()
+        print(f"  📄 시트 생성: {sheet_name}")
+    except Exception:
+        print(f"  📄 시트 이미 존재: {sheet_name}")
+
+def write_header(service, sheet_name: str):
+    """헤더 행 작성"""
+    headers = [["CUT번호", "타임코드", "내레이션(영어)", "영어자막", "한글자막", "이미지프롬프트"]]
+    service.spreadsheets().values().update(
+        spreadsheetId=SHEETS_ID,
+        range=f"{sheet_name}!A1:F1",
+        valueInputOption="RAW",
+        body={"values": headers}
     ).execute()
 
-print(f"✅ {today} 시트에 {len(data_values)}개 쇼츠 입력 완료!")
-print(f"📌 구조: A열(항목) + B열(CUT별 상세 대본)")
+def write_episode_to_sheet(service, sheet_name: str, category: dict, cuts: list, start_row: int):
+    """
+    에피소드 대본을 Sheets에 입력
+    각 CUT = 1행, 6열 구조
+    에피소드 사이 구분행 자동 삽입
+    """
+    rows = []
+
+    # 에피소드 제목 구분행
+    rows.append([
+        f"=== {category['id']} | {category['title']} ===",
+        "", "", "", "", ""
+    ])
+
+    # CUT별 데이터 행
+    for cut in cuts:
+        row = [
+            f"CUT {cut.get('cut', '')}",
+            cut.get("timecode", ""),
+            cut.get("narration", ""),
+            cut.get("en_subtitle", ""),
+            cut.get("kr_subtitle", ""),
+            cut.get("image_prompt", "")
+        ]
+        rows.append(row)
+
+    # 에피소드 후 빈 구분행
+    rows.append(["", "", "", "", "", ""])
+
+    end_row = start_row + len(rows) - 1
+    range_notation = f"{sheet_name}!A{start_row}:F{end_row}"
+
+    service.spreadsheets().values().update(
+        spreadsheetId=SHEETS_ID,
+        range=range_notation,
+        valueInputOption="RAW",
+        body={"values": rows}
+    ).execute()
+
+    print(f"  📝 Sheets 입력 완료: {category['title']} ({len(cuts)} CUTs, 행 {start_row}-{end_row})")
+    return end_row + 1  # 다음 에피소드 시작 행 반환
+
+def format_sheet(service, sheet_name: str):
+    """
+    Sheets 열 너비 자동 조정 + 헤더 볼드 처리
+    """
+    spreadsheet = service.spreadsheets().get(spreadsheetId=SHEETS_ID).execute()
+    sheet_id = None
+    for s in spreadsheet["sheets"]:
+        if s["properties"]["title"] == sheet_name:
+            sheet_id = s["properties"]["sheetId"]
+            break
+
+    if sheet_id is None:
+        return
+
+    requests = [
+        # 헤더 볼드
+        {
+            "repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+                "fields": "userEnteredFormat.textFormat.bold"
+            }
+        },
+        # 열 너비 설정
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 80}, "fields": "pixelSize"
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 1, "endIndex": 2},
+            "properties": {"pixelSize": 80}, "fields": "pixelSize"
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 2, "endIndex": 3},
+            "properties": {"pixelSize": 300}, "fields": "pixelSize"
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 3, "endIndex": 4},
+            "properties": {"pixelSize": 200}, "fields": "pixelSize"
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 4, "endIndex": 5},
+            "properties": {"pixelSize": 150}, "fields": "pixelSize"
+        }},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 5, "endIndex": 6},
+            "properties": {"pixelSize": 400}, "fields": "pixelSize"
+        }},
+    ]
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SHEETS_ID,
+        body={"requests": requests}
+    ).execute()
+    print(f"  🎨 Sheets 포맷 완료")
+
+# ============================================================
+# 메인 파이프라인
+# ============================================================
+
+def run_pipeline():
+    today = datetime.now().strftime("%Y-%m-%d")
+    print(f"\n{'='*50}")
+    print(f"🚀 Korean Shorts Pipeline 시작: {today}")
+    print(f"{'='*50}\n")
+
+    # 1. Google Trends 주제 선택
+    print("📊 Step 1: Google Trends 주제 선택")
+    categories = get_trending_topics()
+
+    # 2. Sheets 서비스 초기화
+    print("\n📋 Step 2: Google Sheets 초기화")
+    service = get_sheets_service()
+    sheet_name = today
+    create_date_sheet(service, sheet_name)
+    write_header(service, sheet_name)
+
+    # 3. 각 카테고리별 대본 생성 + Sheets 입력
+    print(f"\n✍️  Step 3: 대본 생성 ({len(categories)}개 에피소드)")
+    current_row = 2  # 헤더 다음 행부터 시작
+
+    for i, category in enumerate(categories, 1):
+        print(f"\n  [{i}/{len(categories)}] {category['title']}")
+
+        # Claude로 대본 생성
+        cuts = generate_script(category)
+
+        if not cuts:
+            print(f"  ⚠️ 스킵: {category['title']} (생성 실패)")
+            continue
+
+        # Sheets에 입력
+        current_row = write_episode_to_sheet(
+            service, sheet_name, category, cuts, current_row
+        )
+
+    # 4. Sheets 포맷 정리
+    print(f"\n🎨 Step 4: Sheets 포맷 정리")
+    format_sheet(service, sheet_name)
+
+    print(f"\n{'='*50}")
+    print(f"✅ 파이프라인 완료!")
+    print(f"📊 Sheets: https://docs.google.com/spreadsheets/d/{SHEETS_ID}")
+    print(f"{'='*50}\n")
+
+# ============================================================
+# 실행
+# ============================================================
+
+if __name__ == "__main__":
+    run_pipeline()
