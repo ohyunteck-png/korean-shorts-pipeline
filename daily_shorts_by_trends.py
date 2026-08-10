@@ -8,8 +8,8 @@ from datetime import datetime
 pytrends = TrendReq(hl='ko_KR', tz=360)
 
 # Google API 인증
-SERVICE_ACCOUNT_FILE = 'C:\\Users\\YT\\korean-shorts-bot-key.json'
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+SERVICE_ACCOUNT_FILE = 'korean-shorts-bot-key.json'
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 SPREADSHEET_ID = "1XRmeIjaTleJpgI6m3QLCxhzhnvX6NXtKyUHI6o4MPas"
 
 credentials = service_account.Credentials.from_service_account_file(
