@@ -5,6 +5,7 @@ import anthropic
 from datetime import datetime
 import json
 import os
+import time
 
 pytrends = TrendReq(hl='ko_KR', tz=360)
 
@@ -71,16 +72,54 @@ for shorts_id in selected_shorts:
     if shorts_id in categories:
         print(f"  - {shorts_id}: {categories[shorts_id]}")
 
-print(f"\n📤 Google Sheets에 입력 중...\n")
+print(f"\n📤 새로운 배치 생성 중...\n")
+
+messages = []
+for shorts_id in selected_shorts:
+    messages.append({
+        "custom_id": shorts_id,
+        "params": {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"""
+{shorts_id}에 대해 한국어 YouTube Shorts 대본을 작성하세요.
+
+형식:
+[0~12s] 착오 상황 설명
+[12~30s] 해결책 제시
+[30~45s] 성공 결과 + CTA
+
+한국 일상 구어체로 작성하세요.
+자연스럽고 친근한 톤으로 작성해주세요.
+"""
+                }
+            ],
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 2000
+        }
+    })
+
+batch = client.beta.messages.batches.create(requests=messages)
+batch_id = batch.id
+print(f"📌 배치 ID: {batch_id}\n")
+
+print("⏳ 배치 처리 중...\n")
+while True:
+    batch_status = client.beta.messages.batches.retrieve(batch_id)
+    print(f"상태: {batch_status.processing_status}")
+    if batch_status.processing_status == "ended":
+        break
+    time.sleep(5)
+
+print("\n✅ 배치 완료!\n")
+
+results = list(client.beta.messages.batches.results(batch_id))
+
+print(f"📤 Google Sheets에 입력 중...\n")
 
 today = datetime.now().strftime("%Y-%m-%d")
 sheet_name = today
-
-batch_id = "msgbatch_01FqsJpcHuPKWkamnR1CcoKG"
-try:
-    results = list(client.beta.messages.batches.results(batch_id))
-except:
-    results = []
 
 try:
     requests = [{'addSheet': {'properties': {'title': sheet_name, 'gridProperties': {'rowCount': 100, 'columnCount': 2}}}}]
@@ -118,3 +157,4 @@ if data_values:
 
 print(f"✅ {today} 시트에 {len(data_values)}개 쇼츠 입력 완료!")
 print(f"📌 구조: A열(항목) + B열(대본)")
+print(f"📌 배치 ID: {batch_id}")
