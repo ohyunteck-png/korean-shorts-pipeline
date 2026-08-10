@@ -117,3 +117,4 @@ if data_values:
     ).execute()
 
 print(f"✅ {today} 시트에 {len(data_values)}개 쇼츠 입력 완료!")
+print(f"📌 구조: A열(항목) + B열(대본)")
