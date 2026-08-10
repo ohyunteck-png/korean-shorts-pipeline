@@ -5,6 +5,7 @@ import anthropic
 from datetime import datetime
 import json
 import re
+import os
 
 # Google Trends 설정
 pytrends = TrendReq(hl='ko_KR', tz=360)
