@@ -168,12 +168,12 @@ for shorts_id in selected_shorts:
                 parts['image_prompt'] = img_match.group(1).strip()[:500]
             
             data_values.append([
-                shorts_id,
-                parts['narration'] or content[:100],
-                parts['eng_subtitle'] or 'TBD',
-                parts['kor_subtitle'] or 'TBD',
-                parts['image_prompt'] or 'TBD'
-            ])
+    shorts_id,
+    parts['narration'] or content,
+    parts['eng_subtitle'] or 'TBD',
+    parts['kor_subtitle'] or 'TBD',
+    parts['image_prompt'] or 'TBD'
+])
             break
 
 # Google Sheets에 데이터 입력
