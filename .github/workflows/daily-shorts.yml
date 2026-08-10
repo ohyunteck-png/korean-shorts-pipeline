@@ -32,3 +32,14 @@ jobs:
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       run: |
         python daily_shorts_by_trends.py
+    
+    - name: 라이브러리 추가 설치
+      run: |
+        pip install google-generativeai
+    
+    - name: 이미지 자동 생성
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+      run: |
+        python generate_images.py
