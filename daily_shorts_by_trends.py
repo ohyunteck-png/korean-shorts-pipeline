@@ -186,13 +186,7 @@ if data_values:
         body={'values': data_values}
     ).execute()
 
-# Google Drive에서 공유 가능하게 설정
-drive_service = build('drive', 'v3', credentials=credentials)
-drive_service.permissions().create(
-    fileId=SPREADSHEET_ID,
-    body={'role': 'reader', 'type': 'anyone'},
-    fields='id'
-).execute()
+
 
 print(f"✅ {today} 시트에 {len(data_values)}개 쇼츠 입력 완료!")
 print(f"📌 각 열에 데이터 정렬됨:")
