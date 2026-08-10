@@ -30,6 +30,7 @@ jobs:
     - name: 쇼츠 자동 생성 및 업로드
       env:
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
       run: |
         python daily_shorts_by_trends.py
     
